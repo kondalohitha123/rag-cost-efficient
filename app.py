@@ -76,9 +76,9 @@ if prompt := st.chat_input("Ask a question about your documents..."):
                 response_text = "No relevant context found in vector store."
             else:
                 # Generate answer
-    with st.chat_message("assistant"):
-        with st.spinner("Searching documents & generating answer..."):
-            context = retrieve_context(prompt)
+              with st.chat_message("assistant"):
+               with st.spinner("Searching documents & generating answer..."):
+                context = retrieve_context(prompt)
             
             if not context:
                 response_text = "No relevant context found in vector store."
