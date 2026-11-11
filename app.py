@@ -11,19 +11,24 @@ st.title("🤖 Local Document Assistant")
 st.caption("Powered by all-MiniLM-L6-v2 & Llama 3.2 via Ollama")
 
 DB_FILE = "vector_store.json"
+TOP_K = 1  # number of chunks sent to the LLM (small prompts = faster, cheaper)
+
 
 # Load embedding model once into cache so it runs fast
 @st.cache_resource
 def load_embedding_model():
-    return SentenceTransformer('all-MiniLM-L6-v2')
+    return SentenceTransformer("all-MiniLM-L6-v2")
+
 
 model = load_embedding_model()
+
 
 def load_db():
     if not os.path.exists(DB_FILE):
         return {}
     with open(DB_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
+
 
 def cosine_similarity(v1, v2):
     dot_product = sum(a * b for a, b in zip(v1, v2))
@@ -33,23 +38,25 @@ def cosine_similarity(v1, v2):
         return 0.0
     return dot_product / (norm_v1 * norm_v2)
 
-def retrieve_context(query_text: str, top_k: int = 1) -> str:
+
+def retrieve_chunks(query_text: str, top_k: int = TOP_K):
+    """Return the top_k most similar chunks as a list of dicts (text, score, source)."""
     db_data = load_db()
     if not db_data:
-        return ""
+        return []
 
     query_vector = model.encode(query_text).tolist()
     results = []
-
-    for chunk_id, data in db_data.items():
-        sim_score = cosine_similarity(query_vector, data["vector"])
+    for data in db_data.values():
         results.append({
             "text": data["text"],
-            "score": sim_score
+            "score": cosine_similarity(query_vector, data["vector"]),
+            "source": data.get("source", "unknown"),
         })
 
     results.sort(key=lambda x: x["score"], reverse=True)
-    return "\n\n".join([res["text"] for res in results[:top_k]])
+    return results[:top_k]
+
 
 # Store chat history in session state
 if "messages" not in st.session_state:
@@ -67,36 +74,41 @@ if prompt := st.chat_input("Ask a question about your documents..."):
     with st.chat_message("user"):
         st.write(prompt)
 
-    # Generate answer
+    # Generate answer (one assistant block only)
     with st.chat_message("assistant"):
         with st.spinner("Searching documents & generating answer..."):
-            context = retrieve_context(prompt)
-            
-            if not context:
-                response_text = "No relevant context found in vector store."
-            else:
-                # Generate answer
-              with st.chat_message("assistant"):
-               with st.spinner("Searching documents & generating answer..."):
-                context = retrieve_context(prompt)
-            
-            if not context:
-                response_text = "No relevant context found in vector store."
-            else:
-                # PASTE THE NEW PROMPT HERE:
-                rag_prompt = f"""You are a helpful assistant. Answer the user's question. 
+            chunks = retrieve_chunks(prompt)
 
-Use the provided Context if it contains relevant information to answer the question. 
-If the Context is not relevant or does not contain the answer, answer the question using your general knowledge.
+            if not chunks:
+                response_text = (
+                    "No documents found in the vector store. "
+                    "Run `python ingest.py` first."
+                )
+            else:
+                context = "\n\n".join(c["text"] for c in chunks)
+                rag_prompt = f"""You are a helpful assistant. Answer the user's question. Use the provided Context if it contains relevant information to answer the question. If the Context is not relevant or does not contain the answer, answer the question using your general knowledge.
 
 Context:
 {context}
 
 Question: {prompt}
 Answer:"""
+                try:
+                    response = ollama.generate(model="llama3.2", prompt=rag_prompt)
+                    response_text = response["response"]
+                except Exception:
+                    response_text = (
+                        "Could not reach Ollama. Make sure it is running and "
+                        "the model is installed: `ollama pull llama3.2`."
+                    )
 
-                response = ollama.generate(model="llama3.2", prompt=rag_prompt)
-                response_text = response['response']
+        st.write(response_text)
 
-            st.write(response_text)
-            st.session_state.messages.append({"role": "assistant", "content": response_text})
+        # Show what was retrieved, so the answer can be verified
+        if chunks:
+            with st.expander("Retrieved context"):
+                for c in chunks:
+                    st.caption(f"Similarity: {c['score']:.2f} | Source: {c['source']}")
+                    st.write(c["text"])
+
+    st.session_state.messages.append({"role": "assistant", "content": response_text})
